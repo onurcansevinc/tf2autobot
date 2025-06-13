@@ -4,6 +4,7 @@ import Bot from '../Bot';
 import log from '../../lib/logger';
 import SKU from '@tf2autobot/tf2-sku';
 import { UnknownDictionary } from '../../types/common';
+import { parseEconItem } from 'tf2-item-format/static';
 import { TradeOffer } from '@tf2autobot/tradeoffer-manager';
 
 interface TradeRecord {
@@ -160,85 +161,74 @@ export default class CSVExport {
         return { keys, metal };
     }
 
-    private convertEconItemToSKUObject(item: any): any {
-        return {
-            defindex: item.defindex,
-            quality: item.quality,
-            craftable: item.craftable,
-            tradable: item.tradable,
-            killstreak: item.killstreak,
-            australium: item.australium,
-            effect: item.effect,
-            festive: item.festive,
-            paintkit: item.paintkit,
-            wear: item.wear,
-            quality2: item.quality2,
-            target: item.target,
-            craftnumber: item.craftnumber,
-            crateseries: item.crateseries,
-            output: item.output,
-            outputQuality: item.outputQuality,
-            paint: item.paint
-        };
+    private async saveTradeOfferAsJSON(offer: TradeOffer): Promise<void> {
+        const filesDir = path.join(process.cwd(), 'files');
+        const jsonFilePath = path.join(filesDir, `trade_${offer.id}.json`);
+        await fs.promises.writeFile(jsonFilePath, JSON.stringify(offer, null, 2));
     }
 
     public async onTradeAccepted(offer: TradeOffer): Promise<void> {
-        const timestamp = Date.now();
         const tradeId = offer.id;
+        const timestamp = Date.now();
+
+        // Save trade offer details as JSON
+        // await this.saveTradeOfferAsJSON(offer);
+
         const partnerSteamId = offer.partner.getSteamID64();
-        const partnerName = this.bot.friends.getFriend(partnerSteamId)?.player_name || 'Unknown';
         const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+        const partnerName = this.bot.friends.getFriend(partnerSteamId)?.player_name || 'Unknown';
 
-        // Get items from the trade
-        const ourItems = offer.itemsToGive || [];
-        const theirItems = offer.itemsToReceive || [];
+        const ourItems =
+            offer?.itemsToGive?.map(item => ({ ...item, formatted: parseEconItem(item as any, true, true) })) || [];
+        const theirItems =
+            offer?.itemsToReceive?.map(item => ({ ...item, formatted: parseEconItem(item as any, true, true) })) || [];
 
-        // Process items we received (purchases)
+        // theirItems are the items we received
         for (const item of theirItems) {
             if (!item) continue;
 
-            const skuObject = this.convertEconItemToSKUObject(item);
-            const sku = SKU.fromObject(skuObject);
+            const sku = SKU.fromObject(item.formatted as any);
             if (!sku) continue;
 
             const price = this.bot.pricelist.getPriceBySkuOrAsset({ priceKey: sku, onlyEnabled: false });
             if (!price) continue;
 
-            const itemName = this.bot.schema.getName(SKU.fromString(sku), false);
             const buyPrice = price.buy.toString();
+            const itemName = this.bot.schema.getName(SKU.fromString(sku), false);
             const { keys: cost_k, metal: cost_r } = CSVExport.parseCurrenciesString(buyPrice);
             const custom_name = this.getCustomName(sku);
             const buy_date = new Date(timestamp).toISOString();
 
-            const row = `${buy_date},${tradeId},${custom_name},${cost_k},${cost_r},${keyPrice},${partnerSteamId},${itemName},${sku}\n`;
-            await fs.promises.appendFile(this.boughtFilePath, row);
+            for (let i = 0; i < item.amount; i++) {
+                const row = `${buy_date},${tradeId},${custom_name},${cost_k},${cost_r},${keyPrice},${partnerSteamId},${itemName},${sku}\n`;
+                await fs.promises.appendFile(this.boughtFilePath, row);
 
-            if (!this.boughtRecords[sku]) {
-                this.boughtRecords[sku] = [];
+                if (!this.boughtRecords[sku]) {
+                    this.boughtRecords[sku] = [];
+                }
+                this.boughtRecords[sku].push({
+                    timestamp: timestamp,
+                    tradeId,
+                    partnerSteamId,
+                    partnerName,
+                    k_r_ratio: `${keyPrice}`,
+                    sku,
+                    itemName,
+                    buyPrice,
+                    sellPrice: '',
+                    custom_name
+                });
             }
-            this.boughtRecords[sku].push({
-                timestamp: timestamp,
-                tradeId,
-                partnerSteamId,
-                partnerName,
-                k_r_ratio: `${keyPrice}`,
-                sku,
-                itemName,
-                buyPrice,
-                sellPrice: '',
-                custom_name
-            });
         }
 
-        // Process items we gave (sales)
+        // ourItems are the items we sold
         for (const item of ourItems) {
             if (!item) continue;
 
-            const skuObject = this.convertEconItemToSKUObject(item);
-            const sku = SKU.fromObject(skuObject);
+            const sku = SKU.fromObject(item.formatted as any);
             if (!sku) continue;
 
-            const price = this.bot.pricelist.getPriceBySkuOrAsset({ priceKey: sku, onlyEnabled: false });
+            const price = this.bot.pricelist.getPriceBySkuOrAsset({ priceKey: sku });
             if (!price) continue;
 
             const itemName = this.bot.schema.getName(SKU.fromString(sku), false);
@@ -247,26 +237,31 @@ export default class CSVExport {
             const custom_name = this.getCustomName(sku);
             const sell_date = new Date(timestamp).toISOString();
 
-            // Find matching bought record
-            let buyRow = '';
-            if (this.boughtRecords[sku] && this.boughtRecords[sku].length > 0) {
-                const boughtRecord = this.boughtRecords[sku].shift();
-                if (boughtRecord) {
-                    await this.removeFromCSV(this.boughtFilePath, boughtRecord);
-                    const { keys: buy_cost_k, metal: buy_cost_r } = CSVExport.parseCurrenciesString(
-                        boughtRecord.buyPrice
-                    );
-                    buyRow = `${new Date(boughtRecord.timestamp).toISOString()},${boughtRecord.tradeId},${
-                        boughtRecord.custom_name || this.getCustomName(sku)
-                    },${buy_cost_k},${buy_cost_r},${keyPrice},${boughtRecord.partnerSteamId},${
-                        boughtRecord.itemName
-                    },${sku}`;
+            for (let i = 0; i < item.amount; i++) {
+                // Find matching bought record
+                let buyRow = '';
+                if (this.boughtRecords[sku] && this.boughtRecords[sku].length > 0) {
+                    const boughtRecord = this.boughtRecords[sku].shift();
+                    if (boughtRecord) {
+                        await this.removeFromCSV(this.boughtFilePath, boughtRecord);
+                        const { keys: buy_cost_k, metal: buy_cost_r } = CSVExport.parseCurrenciesString(
+                            boughtRecord.buyPrice
+                        );
+                        buyRow = `${new Date(boughtRecord.timestamp).toISOString()},${boughtRecord.tradeId},${
+                            boughtRecord.custom_name || this.getCustomName(sku)
+                        },${buy_cost_k},${buy_cost_r},${keyPrice},${boughtRecord.partnerSteamId},${
+                            boughtRecord.itemName
+                        },${sku}`;
+                    }
+                } else {
+                    // If no buy record exists, create empty buy columns
+                    buyRow = ',,,,,,,';
                 }
-            }
 
-            const sellRow = `${sell_date},${tradeId},${custom_name},${keyPrice},${cost_k},${cost_r},${partnerSteamId},${itemName},${sku}`;
-            const row = `${buyRow},${sellRow}\n`;
-            await fs.promises.appendFile(this.tradedFilePath, row);
+                const sellRow = `${sell_date},${tradeId},${custom_name},${cost_k},${cost_r},${keyPrice},${partnerSteamId},${itemName},${sku}`;
+                const row = `${buyRow},${sellRow}\n`;
+                await fs.promises.appendFile(this.tradedFilePath, row);
+            }
         }
     }
 }

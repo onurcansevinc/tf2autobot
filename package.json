@@ -13,7 +13,8 @@
         "lint": "eslint .",
         "prettier": "prettier --check src/**/* && prettier --check *.json",
         "eslint-check": "npx eslint-config-prettier src/app.ts",
-        "dev": "npm run build && node dist/app.js"
+        "dev": "npm run build && node dist/app.js",
+        "watch:csv-exporter": "nodemon --watch src/classes/CSVEXport/csvExporter.ts --watch src/test/csvExporterTest.ts --ext ts --exec \"ts-node src/test/csvExporterTest.ts\""
     },
     "repository": {
         "type": "git",
@@ -68,6 +69,7 @@
         "steam-totp": "^2.1.2",
         "steam-user": "^5.2.2",
         "steamid": "^2.1.0",
+        "tf2-item-format": "^5.9.6",
         "url": "^0.11.4",
         "valid-url": "^1.0.9",
         "winston": "^3.17.0",
